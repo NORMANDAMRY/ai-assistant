@@ -43,6 +43,34 @@ function buildGeminiContent(messages: any[]) {
   return contents;
 }
 
+async function callOpenAICompatible(
+  baseUrl: string,
+  model: string,
+  messages: any[],
+  apiKey: string,
+  label: string
+) {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.7,
+      max_tokens: 4096,
+    }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`${label} API error: ${errorText}`);
+  }
+  const data = await response.json();
+  return data.choices[0]?.message?.content || "";
+}
+
 async function callGroq(model: string, messages: any[], apiKey: string) {
   const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -150,15 +178,32 @@ serve(async (req) => {
 
     const groqApiKey = Deno.env.get("GROQ_API_KEY");
     const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
+    const opencodeApiKey = Deno.env.get("OPENCODE_API_KEY");
+    const openrouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     const usedModel = model || "llama-3.3-70b-versatile";
 
     const systemMessage = {
       role: "system",
-      content: "You are KrakenAi, a helpful AI coding assistant. You can analyze images when provided. Provide clear, accurate, and concise responses. Use markdown for code blocks with proper syntax highlighting."
+      content: `You are KrakenAi, a deliberate AI coding assistant that follows a structured workflow. You are NOT omniscient — always ask clarifying questions before assuming intent.
+
+Workflow:
+1. **Plan** — When given a task, first analyze what's needed. If requirements are ambiguous, list your assumptions and ask the user to confirm before proceeding.
+2. **Build** — Only implement after the plan is confirmed. Show the key files/steps before writing code.
+3. **Verify** — After building, suggest how to test or verify the result.
+
+Guidelines:
+- Acknowledge uncertainty. Say "I'm not sure" instead of guessing.
+- If a task is large, break it into steps and confirm each step with the user.
+- Ask for context before making assumptions about the codebase or environment.
+- Be concise but thorough. Prioritize correctness over speed.
+- Use markdown for code blocks with proper syntax highlighting.
+- You can analyze images when provided.`
     };
 
     const groqMessages = [systemMessage, ...messages];
     const isGemini = usedModel.startsWith("gemini");
+    const isOpencode = usedModel.startsWith("opencode/");
+    const isMinimax = usedModel.startsWith("minimax/");
 
     let assistantMessage: string;
 
@@ -170,6 +215,37 @@ serve(async (req) => {
         });
       }
       assistantMessage = await callGemini(usedModel, groqMessages, geminiApiKey);
+    } else if (isOpencode) {
+      if (!opencodeApiKey) {
+        return new Response(JSON.stringify({ error: "OpenCode API key not configured. Get one at https://opencode.ai/auth" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      assistantMessage = await callOpenAICompatible(
+        "https://opencode.ai/zen/v1",
+        "big-pickle",
+        groqMessages,
+        opencodeApiKey,
+        "OpenCode Zen"
+      );
+    } else if (isMinimax) {
+      if (!openrouterApiKey) {
+        return new Response(JSON.stringify({ error: "OpenRouter API key not configured. Get one at https://openrouter.ai/keys" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      const orModel = usedModel === "minimax/m2.5-free"
+        ? "minimax/minimax-m2.5-free"
+        : usedModel;
+      assistantMessage = await callOpenAICompatible(
+        "https://openrouter.ai/api/v1",
+        orModel,
+        groqMessages,
+        openrouterApiKey,
+        "OpenRouter"
+      );
     } else {
       if (!groqApiKey) {
         return new Response(JSON.stringify({ error: "Groq API key not configured" }), {

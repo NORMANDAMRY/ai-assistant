@@ -35,6 +35,8 @@ const MODELS = [
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Vision)' },
   { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B (Vision)' },
   { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B' },
+  { id: 'opencode/big-pickle', name: 'Big Pickle (OpenCode Zen) ⭐' },
+  { id: 'minimax/m2.5-free', name: 'MiniMax M2.5 (Free)' },
 ];
 
 function App() {
