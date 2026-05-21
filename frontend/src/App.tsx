@@ -6,15 +6,20 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { 
   MessageCircle, Plus, LogOut, Send, Bot, User, ChevronDown, Trash2,
-  Copy, CheckCheck, Menu, X, RefreshCw
+  Copy, CheckCheck, Menu, X, RefreshCw, Image, Loader2, Download, Sparkles
 } from 'lucide-react';
 import './App.css';
+
+type ContentPart = 
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
 
 interface Message {
   id?: string;
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentPart[];
   timestamp?: string;
+  media?: { type: 'image' | 'video'; url: string; prompt: string };
 }
 
 interface Chat {
@@ -26,8 +31,9 @@ interface Chat {
 }
 
 const MODELS = [
-  { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B' },
-  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B' },
+  { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B ⭐' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Vision)' },
+  { id: 'meta-llama/llama-4-scout-17b-16e-instruct', name: 'Llama 4 Scout 17B (Vision)' },
   { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B' },
 ];
 
@@ -49,10 +55,14 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [selectedImages, setSelectedImages] = useState<string[]>([]);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -225,6 +235,58 @@ function App() {
     }
   };
 
+  const uploadImages = async (files: FileList) => {
+    setUploadingImages(true);
+    const urls: string[] = [];
+    for (const file of Array.from(files)) {
+      const ext = file.name.split('.').pop();
+      const path = `${user.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const { error } = await supabase.storage.from('chat-images').upload(path, file);
+      if (error) { console.error('Upload error:', error); continue; }
+      const { data: { publicUrl } } = supabase.storage.from('chat-images').getPublicUrl(path);
+      urls.push(publicUrl);
+    }
+    setSelectedImages(prev => [...prev, ...urls]);
+    setUploadingImages(false);
+  };
+
+  const removeImage = (url: string) => {
+    setSelectedImages(prev => prev.filter(u => u !== url));
+  };
+
+  const generateMedia = async (prompt: string, type: 'image' | 'video') => {
+    if (!user || isGenerating) return;
+    setIsGenerating(true);
+    setInput('');
+
+    const genMsg: Message = { role: 'user', content: `/${type === 'image' ? 'imagine' : 'video'} ${prompt}`, timestamp: new Date().toISOString() };
+    setMessages(prev => [...prev, genMsg]);
+    setMessages(prev => [...prev, { role: 'assistant', content: `Generating ${type}...`, timestamp: new Date().toISOString() }]);
+
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      if (!token) return;
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL || 'https://ubnpsaanghtgriluemqg.supabase.co'}/functions/v1/generate`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, type }),
+      });
+      const data = await response.json();
+      const reply = data.error || data.url
+        ? `Here's your generated ${type}:\n![${prompt}](${data.url})`
+        : 'Failed to generate. Try a different prompt.';
+
+      setMessages(prev => {
+        const msgs = prev.slice(0, -1);
+        return [...msgs, { role: 'assistant', content: reply, timestamp: new Date().toISOString(), media: data.url ? { type, url: data.url, prompt } : undefined }];
+      });
+    } catch (err) {
+      setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Error: ${err}`, timestamp: new Date().toISOString() }]);
+    }
+    setIsGenerating(false);
+  };
+
   const copyMessage = async (content: string, id: string) => {
     await navigator.clipboard.writeText(content);
     setCopiedId(id);
@@ -244,16 +306,24 @@ function App() {
     await handleSubmitInternal(messagesToKeep, lastUserMessage.content);
   };
 
-  const handleSubmitInternal = async (existingMessages: Message[], userMessage: string) => {
-    setIsTyping(true);
+  const getTextContent = (content: string | ContentPart[]): string => {
+    if (typeof content === 'string') return content;
+    return content.filter(p => p.type === 'text').map(p => (p as any).text).join(' ');
+  };
 
-    const userMsg: Message = { role: 'user', content: userMessage, timestamp: new Date().toISOString() };
+  const handleSubmitInternal = async (existingMessages: Message[], userMessageContent: string | ContentPart[]) => {
+    setIsTyping(true);
+    const userMsg: Message = { role: 'user', content: userMessageContent, timestamp: new Date().toISOString() };
     const updatedMessages = [...existingMessages, userMsg];
     setMessages([...updatedMessages, { role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token;
-      if (!token) return;
+      if (!token) {
+        setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: 'Session expired. Please sign in again.', timestamp: new Date().toISOString() }]);
+        setIsTyping(false);
+        return;
+      }
 
       const currentMessages = updatedMessages.map(m => ({
         role: m.role,
@@ -274,25 +344,24 @@ function App() {
       });
 
       const data = await response.json();
+      const reply = data.message || data.error || 'No response';
       
-      if (data.message) {
-        setMessages(prev => {
-          const newMsgs = prev.slice(0, -1);
-          return [...newMsgs, { role: 'assistant', content: data.message, timestamp: new Date().toISOString() }];
-        });
+      setMessages(prev => {
+        const newMsgs = prev.slice(0, -1);
+        return [...newMsgs, { role: 'assistant', content: reply, timestamp: new Date().toISOString() }];
+      });
 
-        if (!currentChat && data.chat_id) {
-          const title = userMessage.slice(0, 40) + (userMessage.length > 40 ? '...' : '');
-          const newChat: Chat = {
-            id: data.chat_id,
-            title,
-            model: selectedModel,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-          setCurrentChat(newChat);
-          setChats([newChat, ...chats]);
-        }
+      if (data.message && !currentChat && data.chat_id) {
+        const title = getTextContent(userMessageContent).slice(0, 40) || 'New Chat';
+        const newChat: Chat = {
+          id: data.chat_id,
+          title,
+          model: selectedModel,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        setCurrentChat(newChat);
+        setChats([newChat, ...chats]);
       }
     } catch (error) {
       console.error('Error:', error);
@@ -304,11 +373,28 @@ function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isTyping || !user) return;
+    if ((!input.trim() && selectedImages.length === 0) || isTyping || isGenerating || !user) return;
 
-    const userMessage = input.trim();
+    const cmd = input.trim().toLowerCase();
+    if (cmd.startsWith('/imagine ')) {
+      await generateMedia(input.trim().slice(9), 'image');
+      return;
+    }
+    if (cmd.startsWith('/video ')) {
+      await generateMedia(input.trim().slice(7), 'video');
+      return;
+    }
+
+    const content: string | ContentPart[] = selectedImages.length > 0
+      ? [
+          ...(input.trim() ? [{ type: 'text' as const, text: input.trim() }] : []),
+          ...selectedImages.map(url => ({ type: 'image_url' as const, image_url: { url } })),
+        ]
+      : input.trim();
+
     setInput('');
-    await handleSubmitInternal(messages, userMessage);
+    setSelectedImages([]);
+    await handleSubmitInternal(messages, content);
   };
 
   const scrollToBottom = () => {
@@ -570,17 +656,47 @@ function App() {
                             },
                           }}
                         >
-                          {msg.content}
+                          {typeof msg.content === 'string' ? msg.content : ''}
                         </Markdown>
                       ) : (
-                        <p>{msg.content}</p>
+                        <>
+                          {typeof msg.content === 'string' ? (
+                            <p>{msg.content}</p>
+                          ) : (
+                            <div className="vision-content">
+                              {msg.content.map((part, pi) => 
+                                part.type === 'text' ? (
+                                  <p key={pi}>{part.text}</p>
+                                ) : (
+                                  <img key={pi} src={part.image_url.url} alt="Uploaded" className="chat-image" />
+                                )
+                              )}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {msg.media?.type === 'image' && (
+                        <div className="generated-media">
+                          <img src={msg.media.url} alt={msg.media.prompt} className="generated-image" />
+                          <a href={msg.media.url} download className="download-btn" title="Download">
+                            <Download size={14} />
+                          </a>
+                        </div>
+                      )}
+                      {msg.media?.type === 'video' && (
+                        <div className="generated-media">
+                          <video src={msg.media.url} controls className="generated-video" />
+                          <a href={msg.media.url} download className="download-btn" title="Download">
+                            <Download size={14} />
+                          </a>
+                        </div>
                       )}
                     </div>
-                    {msg.role === 'assistant' && msg.content && (
+                    {msg.role === 'assistant' && (msg.content || msg.media) && (
                       <div className="message-actions">
                         <button 
                           className="action-btn"
-                          onClick={() => copyMessage(msg.content, `msg-${i}`)}
+                          onClick={() => copyMessage(typeof msg.content === 'string' ? msg.content : getTextContent(msg.content), `msg-${i}`)}
                           title="Copy response"
                         >
                           {copiedId === `msg-${i}` ? <CheckCheck size={14} /> : <Copy size={14} />}
@@ -623,13 +739,51 @@ function App() {
         )}
 
         <form className="input-form" onSubmit={handleSubmit}>
+          {selectedImages.length > 0 && (
+            <div className="image-preview-bar">
+              {selectedImages.map((url, i) => (
+                <div key={i} className="image-preview-item">
+                  <img src={url} alt={`Upload ${i+1}`} />
+                  <button type="button" className="image-remove-btn" onClick={() => removeImage(url)}>
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="input-wrapper">
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              ref={fileInputRef}
+              style={{ display: 'none' }}
+              onChange={(e) => { if (e.target.files?.length) uploadImages(e.target.files); e.target.value = ''; }}
+            />
+            <button
+              type="button"
+              className="image-upload-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isTyping || uploadingImages}
+              title="Upload image"
+            >
+              {uploadingImages ? <Loader2 size={18} className="spin" /> : <Image size={18} />}
+            </button>
+            <button
+              type="button"
+              className="generate-btn"
+              onClick={() => setInput('/imagine ')}
+              disabled={isTyping || isGenerating}
+              title="Generate image (/imagine)"
+            >
+              {isGenerating ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
+            </button>
             <input
               ref={inputRef}
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Send a message..."
+              placeholder={selectedImages.length > 0 ? "Add a message or just send images..." : "Send a message..."}
               disabled={isTyping}
             />
             {messages.length > 0 && !isTyping && (
@@ -645,7 +799,7 @@ function App() {
             <button 
               type="submit" 
               className="send-btn"
-              disabled={isTyping || !input.trim()}
+              disabled={isTyping || (!input.trim() && selectedImages.length === 0)}
             >
               <Send size={18} />
             </button>
