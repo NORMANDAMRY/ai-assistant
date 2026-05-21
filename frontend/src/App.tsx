@@ -6,7 +6,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { 
   MessageCircle, Plus, LogOut, Send, Bot, User, ChevronDown, Trash2,
-  Copy, CheckCheck, Menu, X, RefreshCw, Image, Loader2, Download, Sparkles
+  Copy, CheckCheck, Menu, X, RefreshCw, Image, Loader2, Download, Sparkles, Search
 } from 'lucide-react';
 import './App.css';
 
@@ -815,6 +815,15 @@ function App() {
               title="Generate image (/imagine)"
             >
               {isGenerating ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
+            </button>
+            <button
+              type="button"
+              className="search-btn"
+              onClick={() => setInput('/search ')}
+              disabled={isTyping}
+              title="Search web (/search)"
+            >
+              <Search size={18} />
             </button>
             <input
               ref={inputRef}

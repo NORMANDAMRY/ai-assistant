@@ -147,13 +147,6 @@ async function callGemini(model: string, messages: any[], apiKey: string) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 }
 
-const NEEDS_SEARCH_PATTERNS = [
-  "latest", "news", "current", "today", "recent", "updated", "breaking",
-  "what happened", "what's new", "announced", "released", "launched",
-  "weather", "stock", "price", "election", "score", "results",
-  "who won", "who is", "how to", "tutorial", "guide",
-];
-
 function getLastUserMessage(messages: any[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
@@ -166,8 +159,16 @@ function getLastUserMessage(messages: any[]): string {
 }
 
 function needsWebSearch(text: string): boolean {
-  const lower = text.toLowerCase();
-  return NEEDS_SEARCH_PATTERNS.some(p => lower.includes(p));
+  const lower = text.trim().toLowerCase();
+  if (lower.length < 5) return false;
+  const noSearch = [
+    "hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "yes", "no",
+    "goodbye", "bye", "great", "nice", "cool", "awesome",
+    "tell me more", "continue", "go on", "what else",
+  ];
+  if (noSearch.some(p => lower === p || lower.startsWith(p + " "))) return false;
+  if (/^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|goodbye|bye)[.!]*$/i.test(lower)) return false;
+  return true;
 }
 
 function formatSearchResults(results: any[]): string {
@@ -228,8 +229,10 @@ Guidelines:
 - Be concise but thorough. Prioritize correctness over speed.
 - Use markdown for code blocks with proper syntax highlighting.
 - You can analyze images when provided.
+- **You have access to live web search.** When search results are included below under "Current web search results", use them to answer the user's question. Cite sources by their number [1], [2], etc.
 
-Today's date: ${today}`;
+Today's date: ${today}
+Current time: ${new Date().toISOString()}`;
 
     if (needsWebSearch(lastUserMsg) && Deno.env.get("TAVILY_API_KEY")) {
       try {
