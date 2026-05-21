@@ -147,6 +147,35 @@ async function callGemini(model: string, messages: any[], apiKey: string) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 }
 
+const NEEDS_SEARCH_PATTERNS = [
+  "latest", "news", "current", "today", "recent", "updated", "breaking",
+  "what happened", "what's new", "announced", "released", "launched",
+  "weather", "stock", "price", "election", "score", "results",
+  "who won", "who is", "how to", "tutorial", "guide",
+];
+
+function getLastUserMessage(messages: any[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      return typeof messages[i].content === "string"
+        ? messages[i].content
+        : messages[i].content.find((p: any) => p.type === "text")?.text || "";
+    }
+  }
+  return "";
+}
+
+function needsWebSearch(text: string): boolean {
+  const lower = text.toLowerCase();
+  return NEEDS_SEARCH_PATTERNS.some(p => lower.includes(p));
+}
+
+function formatSearchResults(results: any[]): string {
+  return results.map((r, i) =>
+    `[${i + 1}] ${r.title}\n${r.content}\nSource: ${r.url}`
+  ).join("\n\n");
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -182,9 +211,10 @@ serve(async (req) => {
     const openrouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     const usedModel = model || "llama-3.3-70b-versatile";
 
-    const systemMessage = {
-      role: "system",
-      content: `You are KrakenAi, a deliberate AI coding assistant that follows a structured workflow. You are NOT omniscient — always ask clarifying questions before assuming intent.
+    const lastUserMsg = getLastUserMessage(messages);
+    const today = new Date().toISOString().split("T")[0];
+
+    let systemContent = `You are KrakenAi, a deliberate AI coding assistant that follows a structured workflow. You are NOT omniscient — always ask clarifying questions before assuming intent.
 
 Workflow:
 1. **Plan** — When given a task, first analyze what's needed. If requirements are ambiguous, list your assumptions and ask the user to confirm before proceeding.
@@ -197,9 +227,33 @@ Guidelines:
 - Ask for context before making assumptions about the codebase or environment.
 - Be concise but thorough. Prioritize correctness over speed.
 - Use markdown for code blocks with proper syntax highlighting.
-- You can analyze images when provided.`
-    };
+- You can analyze images when provided.
 
+Today's date: ${today}`;
+
+    if (needsWebSearch(lastUserMsg) && Deno.env.get("TAVILY_API_KEY")) {
+      try {
+        const searchRes = await fetch(
+          `${supabaseUrl}/functions/v1/search`,
+          {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${supabaseKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ query: lastUserMsg }),
+          }
+        );
+        const searchData = await searchRes.json();
+        if (searchData.results?.length > 0) {
+          systemContent += `\n\n--- Current web search results ---\n${formatSearchResults(searchData.results)}\n---`;
+        }
+      } catch {
+        // Search failed, proceed without it
+      }
+    }
+
+    const systemMessage = { role: "system", content: systemContent };
     const groqMessages = [systemMessage, ...messages];
     const isGemini = usedModel.startsWith("gemini");
     const isOpencode = usedModel.startsWith("opencode/");

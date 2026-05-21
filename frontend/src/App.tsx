@@ -256,6 +256,38 @@ function App() {
     setSelectedImages(prev => prev.filter(u => u !== url));
   };
 
+  const searchWeb = async (query: string) => {
+    if (!user || isTyping) return;
+    setIsTyping(true);
+    setInput('');
+
+    const searchMsg: Message = { role: 'user', content: `/search ${query}`, timestamp: new Date().toISOString() };
+    setMessages(prev => [...prev, searchMsg]);
+    setMessages(prev => [...prev, { role: 'assistant', content: 'Searching...', timestamp: new Date().toISOString() }]);
+
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      if (!token) return;
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL || 'https://ubnpsaanghtgriluemqg.supabase.co'}/functions/v1/search`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const data = await response.json();
+      const results = data.results || [];
+      const reply = results.length > 0
+        ? `**Search results for:** ${query}\n\n${results.map((r: any, i: number) =>
+            `${i + 1}. **[${r.title}](${r.url})**\n   ${r.content}`
+          ).join('\n\n')}`
+        : `No results found for "${query}".`;
+      setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: reply, timestamp: new Date().toISOString() }]);
+    } catch (err) {
+      setMessages(prev => [...prev.slice(0, -1), { role: 'assistant', content: `Search error: ${err}`, timestamp: new Date().toISOString() }]);
+    }
+    setIsTyping(false);
+  };
+
   const generateMedia = async (prompt: string, type: 'image' | 'video') => {
     if (!user || isGenerating) return;
     setIsGenerating(true);
@@ -378,6 +410,10 @@ function App() {
     if ((!input.trim() && selectedImages.length === 0) || isTyping || isGenerating || !user) return;
 
     const cmd = input.trim().toLowerCase();
+    if (cmd.startsWith('/search ')) {
+      await searchWeb(input.trim().slice(8));
+      return;
+    }
     if (cmd.startsWith('/imagine ')) {
       await generateMedia(input.trim().slice(9), 'image');
       return;
